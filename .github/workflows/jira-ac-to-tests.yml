@@ -38,10 +38,7 @@ jobs:
         run: |
           cat > codex_jira_generate_tests.py << 'PY'
           import base64, json, os, pathlib, re, subprocess, sys, urllib.parse, urllib.request
-          if [ -z "${JIRA_API_TOKEN}" ]; then
-             echo "JIRA_API_TOKEN is EMPTY. Add it in Repo Settings → Secrets and rerun."; exit 1
-          fi
-          echo "JIRA_API_TOKEN length: ${#JIRA_API_TOKEN}"
+         
           JIRA_BASE   = os.environ["JIRA_BASE_URL"].rstrip("/")
           JIRA_EMAIL  = os.environ["JIRA_EMAIL"]
           JIRA_TOKEN  = os.environ["JIRA_API_TOKEN"]
@@ -49,7 +46,14 @@ jobs:
           AC_FIELD_ID = os.environ.get("AC_FIELD_ID", "customfield_10059")
           TEST_TYPE   = os.environ.get("TEST_ISSUE_TYPE", "Test")
           LINK_TYPE   = os.environ.get("ISSUE_LINK_TYPE", "Relates")
-
+          set -e
+          echo "Check /myself:"
+          curl -sS -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" -H 'Accept: application/json' \
+            "${JIRA_BASE_URL}/rest/api/3/myself" | head -c 400; echo
+          echo "Search SCRUM-1:"
+          curl -sS -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+            -G --data-urlencode "jql=issueKey=${STORY_KEY}" \
+            "${JIRA_BASE_URL}/rest/api/3/search?fields=summary" | head -c 400; echo
           def _auth_header():
               b = base64.b64encode(f"{JIRA_EMAIL}:{JIRA_TOKEN}".encode()).decode()
               return {
