@@ -38,10 +38,10 @@ jobs:
         run: |
           cat > codex_jira_generate_tests.py << 'PY'
           import base64, json, os, pathlib, re, subprocess, sys, urllib.parse, urllib.request
-
-          JIRA_TOKEN  = os.environ.get("JIRA_API_TOKEN", "")
-          if not JIRA_TOKEN:
-             raise SystemExit("JIRA_API_TOKEN is empty. Set the GitHub Actions secret JIRA_API_TOKEN.")
+          if [ -z "${JIRA_API_TOKEN}" ]; then
+             echo "JIRA_API_TOKEN is EMPTY. Add it in Repo Settings → Secrets and rerun."; exit 1
+          fi
+          echo "JIRA_API_TOKEN length: ${#JIRA_API_TOKEN}"
           JIRA_BASE   = os.environ["JIRA_BASE_URL"].rstrip("/")
           JIRA_EMAIL  = os.environ["JIRA_EMAIL"]
           JIRA_TOKEN  = os.environ["JIRA_API_TOKEN"]
