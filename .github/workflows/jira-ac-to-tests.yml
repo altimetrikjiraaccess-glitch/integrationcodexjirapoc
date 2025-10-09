@@ -1,0 +1,244 @@
+name: Generate tests from Jira AC and push + link
+
+on:
+  workflow_dispatch:
+    inputs:
+      story_key:
+        description: 'Jira story key'
+        required: true
+        default: 'SCRUM-1'
+
+permissions:
+  contents: write   # needed to commit test files back to repo
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Make sure the default GITHUB_TOKEN has write perms (set in repo settings)
+          persist-credentials: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # (Optional) If your org requires a proxy, uncomment and set these via repo/Org Secrets
+      # - name: Configure proxy (optional)
+      #   run: |
+      #     echo "HTTPS_PROXY=${{ secrets.HTTPS_PROXY }}" >> $GITHUB_ENV
+      #     echo "HTTP_PROXY=${{ secrets.HTTP_PROXY }}"   >> $GITHUB_ENV
+      #     echo "REQUESTS_CA_BUNDLE=${{ secrets.CORP_CA_PEM }}" >> $GITHUB_ENV
+      #     echo "SSL_CERT_FILE=${{ secrets.CORP_CA_PEM }}" >> $GITHUB_ENV
+
+      - name: Run generator (no external deps)
+        env:
+          JIRA_BASE_URL: "https://altimetrikjiraaccess.atlassian.net"
+          JIRA_EMAIL: "altimetrikjiraaccess@gmail.com"
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          STORY_KEY: ${{ github.event.inputs.story_key }}
+          AC_FIELD_ID: "customfield_10059"
+          TEST_ISSUE_TYPE: "Test"        # change if your site uses "Test Case" etc.
+          ISSUE_LINK_TYPE: "Relates"     # change to your scheme if needed
+          GIT_AUTHOR_NAME: "codex-bot"
+          GIT_AUTHOR_EMAIL: "codex-bot@users.noreply.github.com"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cat > codex_jira_generate_tests.py << 'PY'
+          import base64, json, os, pathlib, re, subprocess, sys, urllib.parse, urllib.request
+
+          JIRA_BASE   = os.environ["JIRA_BASE_URL"].rstrip("/")
+          JIRA_EMAIL  = os.environ["JIRA_EMAIL"]
+          JIRA_TOKEN  = os.environ["JIRA_API_TOKEN"]
+          STORY_KEY   = os.environ.get("STORY_KEY", "SCRUM-1")
+          AC_FIELD_ID = os.environ.get("AC_FIELD_ID", "customfield_10059")
+          TEST_TYPE   = os.environ.get("TEST_ISSUE_TYPE", "Test")
+          LINK_TYPE   = os.environ.get("ISSUE_LINK_TYPE", "Relates")
+
+          # --- tiny HTTP helpers (urllib, proxy honored via env) ---
+          def _auth_header():
+            b = base64.b64encode(f"{JIRA_EMAIL}:{JIRA_TOKEN}".encode()).decode()
+            return {"Authorization": f"Basic {b}", "Accept": "application/json", "Content-Type": "application/json"}
+
+          def http_get(url):
+            req = urllib.request.Request(url, headers=_auth_header(), method="GET")
+            with urllib.request.urlopen(req, timeout=60) as r:
+              return r.status, r.read().decode()
+
+          def http_post(url, payload_dict):
+            body = json.dumps(payload_dict).encode()
+            req = urllib.request.Request(url, headers=_auth_header(), data=body, method="POST")
+            with urllib.request.urlopen(req, timeout=60) as r:
+              return r.status, r.read().decode()
+
+          # --- Jira ops ---
+          def get_issue_with_ac(key):
+            url = f"{JIRA_BASE}/rest/api/3/issue/{key}?fields=" + urllib.parse.quote(f"summary,{AC_FIELD_ID}")
+            code, text = http_get(url)
+            if code != 200:
+              raise RuntimeError(f"GET issue failed: {code} {text[:400]}")
+            js = json.loads(text)
+            summary = js["fields"].get("summary", "(no summary)")
+            ac_node = js["fields"].get(AC_FIELD_ID)
+            return summary, ac_node
+
+          def create_test_issue(project_key, summary, description_plain):
+            payload = {
+              "fields": {
+                "project": {"key": project_key},
+                "summary": summary,
+                "issuetype": {"name": TEST_TYPE},
+                "description": description_plain
+              }
+            }
+            code, text = http_post(f"{JIRA_BASE}/rest/api/3/issue", payload)
+            if code not in (200, 201):
+              raise RuntimeError(f"Create issue failed: {code} {text[:400]}")
+            key = json.loads(text)["key"]
+            return key
+
+          def link_issues(inward_key, outward_key):
+            payload = {
+              "type": {"name": LINK_TYPE},
+              "inwardIssue": {"key": inward_key},
+              "outwardIssue": {"key": outward_key}
+            }
+            code, text = http_post(f"{JIRA_BASE}/rest/api/3/issueLink", payload)
+            if code not in (200, 201, 204):
+              raise RuntimeError(f"Link issues failed: {code} {text[:400]}")
+
+          # --- AC parsing helpers ---
+          def flatten_adf(node):
+            # best-effort text extractor for Atlassian Document Format
+            def walk(n, out):
+              if isinstance(n, dict):
+                t = n.get("type")
+                if t == "text":
+                  txt = n.get("text", "")
+                  if txt: out.append(txt)
+                if t in ("paragraph", "heading") and out and out[-1] != "\n":
+                  out.append("\n")
+                for k in ("content", "items", "marks"):
+                  if k in n: walk(n[k], out)
+              elif isinstance(n, list):
+                for c in n: walk(c, out)
+            buf = []
+            walk(node, buf)
+            return "".join(buf).replace("\r", "").strip()
+
+          def ac_to_lines(ac_value):
+            if ac_value is None:
+              return []
+            if isinstance(ac_value, list):
+              raw = [str(x or "").strip() for x in ac_value if str(x or "").strip()]
+            elif isinstance(ac_value, str):
+              raw = [ac_value]
+            elif isinstance(ac_value, dict):
+              raw = [flatten_adf(ac_value)]
+            else:
+              raw = [str(ac_value)]
+            lines = []
+            for block in raw:
+              # split by newlines or bullets
+              parts = re.split(r"\r?\n|^\s*[•*-]\s+", block, flags=re.MULTILINE)
+              for p in parts:
+                t = p.strip()
+                if t:
+                  lines.append(t)
+            # de-dupe keep order
+            seen, out = set(), []
+            for l in lines:
+              if l not in seen:
+                seen.add(l); out.append(l)
+            return out
+
+          # --- generate repo files ---
+          def write_tests_to_repo(story_key, summary, ac_lines):
+            base = pathlib.Path("tests/generated") / story_key
+            base.mkdir(parents=True, exist_ok=True)
+            index = (base / "README.md")
+            index.write_text(f"# Auto-generated tests for {story_key}\n\n**Story:** {summary}\n\nGenerated from AC field `{AC_FIELD_ID}`.\n\n", encoding="utf-8")
+            created_files = [str(index)]
+            for i, ac in enumerate(ac_lines, start=1):
+              # Create simple pytest-style placeholder; change to your test framework if needed
+              fname = base / f"test_{story_key.lower()}_ac_{i}.py"
+              text = f'''"""
+Auto-generated from Jira story {story_key}
+AC {i}: {ac}
+"""
+def test_{story_key.lower().replace("-", "_")}_ac_{i}():
+    # TODO: implement according to AC:
+    # {ac}
+    assert True
+'''
+              fname.write_text(text, encoding="utf-8")
+              created_files.append(str(fname))
+            return created_files
+
+          # --- git commit & push ---
+          def git(cmd):
+            r = subprocess.run(cmd, check=True, text=True, capture_output=True)
+            return r.stdout.strip()
+
+          def commit_and_push(files, message):
+            if not files:
+              return
+            git(["git", "config", "user.name", os.getenv("GIT_AUTHOR_NAME", "codex-bot")])
+            git(["git", "config", "user.email", os.getenv("GIT_AUTHOR_EMAIL", "codex-bot@users.noreply.github.com")])
+            git(["git", "add"] + files)
+            # If nothing to commit (all identical), skip push
+            rc = subprocess.run(["git", "diff", "--cached", "--quiet"])
+            if rc.returncode == 0:
+              print("No changes to commit.")
+              return
+            git(["git", "commit", "-m", message])
+            git(["git", "push", "origin", "HEAD"])
+
+          # --- main flow ---
+          def main():
+            # figure out Jira project key from STORY_KEY (prefix before '-')
+            project_key = STORY_KEY.split("-")[0]
+
+            print(f"Reading Jira issue {STORY_KEY}…")
+            summary, ac_node = get_issue_with_ac(STORY_KEY)
+            ac_lines = ac_to_lines(ac_node)
+            if not ac_lines:
+              ac_lines = ["No Acceptance Criteria provided."]
+
+            print(f"Generating {len(ac_lines)} test file(s)…")
+            created_files = write_tests_to_repo(STORY_KEY, summary, ac_lines)
+
+            print("Committing test files to repo…")
+            commit_and_push(created_files, f"chore(tests): auto-generate tests from {STORY_KEY} AC")
+
+            created_issue_keys = []
+            print("Creating Jira Test issues and linking to story…")
+            for i, ac in enumerate(ac_lines, start=1):
+              test_summary = f"[Auto-Test] {STORY_KEY} - AC {i}"
+              description = (
+                f"Generated from story: {STORY_KEY} — {summary}\n\n"
+                f"Acceptance Criteria ({i}/{len(ac_lines)}):\n{ac}\n\n"
+                "Suggested Steps:\n"
+                "1) Review prerequisites\n"
+                "2) Execute steps per AC (Given/When/Then)\n"
+                "3) Capture actual result & evidence\n"
+                "4) Record pass/fail and link defects\n"
+              )
+              key = create_test_issue(project_key, test_summary, description)
+              link_issues(key, STORY_KEY)
+              print(f"  - Created {key} and linked to {STORY_KEY}")
+              created_issue_keys.append(key)
+
+            print("✅ Done.")
+            print("Created test issues:", created_issue_keys)
+
+          if __name__ == "__main__":
+            try:
+              main()
+            except Exception as e:
+              print("❌ Failed:", e)
+              sys.exit(1)
+          PY
+
+          python codex_jira_generate_tests.py
