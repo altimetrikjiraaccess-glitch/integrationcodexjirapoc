@@ -163,10 +163,17 @@ jobs:
             for i, ac in enumerate(ac_lines, start=1):
               # Create simple pytest-style placeholder; change to your test framework if needed
               fname = base / f"test_{story_key.lower()}_ac_{i}.py"
-              text = f'''"""
-Auto-generated from Jira story {story_key}
-AC {i}: {ac}
-"""
+text = (
+    f'"""\n'
+    f'Auto-generated from Jira story {story_key}\n'
+    f'AC {i}: {ac}\n'
+    f'"""\n'
+    f'def test_{story_key.lower().replace("-", "_")}_ac_{i}():\n'
+    f'    # TODO: implement according to AC:\n'
+    f'    # {ac}\n'
+    f'    assert True\n'
+)
+fname.write_text(text, encoding="utf-8")
 def test_{story_key.lower().replace("-", "_")}_ac_{i}():
     # TODO: implement according to AC:
     # {ac}
