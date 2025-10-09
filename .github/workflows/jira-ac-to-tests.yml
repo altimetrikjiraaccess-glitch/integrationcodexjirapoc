@@ -23,17 +23,24 @@ jobs:
         with:
           python-version: '3.11'
 
-- name: Diagnose Jira auth + visibility
-  env:
-    JIRA_BASE_URL: "https://altimetrikjiraaccess.atlassian.net"
-    JIRA_EMAIL: "altimetrikjiraaccess@gmail.com"
-    JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
-    STORY_KEY: ${{ github.event.inputs.story_key }}
-  run: |
-    set -e
-    echo "Jira base: $JIRA_BASE_URL"
-    echo "Runner egress IP:"
-    curl -s https://ifconfig.me || true; echo
+
+      - name: Run generator (no external deps)
+        env:
+          JIRA_BASE_URL: "https://altimetrikjiraaccess.atlassian.net"
+          JIRA_EMAIL: "altimetrikjiraaccess@gmail.com"
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          STORY_KEY: ${{ github.event.inputs.story_key }}
+          AC_FIELD_ID: "customfield_10059"
+          TEST_ISSUE_TYPE: "Test"
+          ISSUE_LINK_TYPE: "Relates"
+          GIT_AUTHOR_NAME: "codex-bot"
+          GIT_AUTHOR_EMAIL: "codex-bot@users.noreply.github.com"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+            set -e
+      echo "Jira base: $JIRA_BASE_URL"
+      echo "Runner egress IP:"
+      curl -s https://ifconfig.me || true; echo
 
     echo "Check /myself:"
     curl -sS -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
@@ -61,21 +68,6 @@ PY
     curl -sS -i -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
       -H 'Accept: application/json' \
       "${JIRA_BASE_URL}/rest/api/3/issue/${STORY_KEY}?fields=summary" | head -n 20
-
-
-      - name: Run generator (no external deps)
-        env:
-          JIRA_BASE_URL: "https://altimetrikjiraaccess.atlassian.net"
-          JIRA_EMAIL: "altimetrikjiraaccess@gmail.com"
-          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
-          STORY_KEY: ${{ github.event.inputs.story_key }}
-          AC_FIELD_ID: "customfield_10059"
-          TEST_ISSUE_TYPE: "Test"
-          ISSUE_LINK_TYPE: "Relates"
-          GIT_AUTHOR_NAME: "codex-bot"
-          GIT_AUTHOR_EMAIL: "codex-bot@users.noreply.github.com"
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
           cat > codex_jira_generate_tests.py << 'PY'
           import base64, json, os, pathlib, re, subprocess, sys, urllib.parse, urllib.request
 
