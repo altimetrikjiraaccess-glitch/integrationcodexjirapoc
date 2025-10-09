@@ -1,4 +1,5 @@
 - name: Diagnose Jira auth + visibility
+  shell: bash
   env:
     JIRA_BASE_URL: "https://altimetrikjiraaccess.atlassian.net"
     JIRA_EMAIL: "altimetrikjiraaccess@gmail.com"
