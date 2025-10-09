@@ -23,6 +23,23 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Diagnose Jira auth + visibility
+        shell: bash
+        env:
+          JIRA_BASE_URL: "https://altimetrikjiraaccess.atlassian.net"
+          JIRA_EMAIL: "altimetrikjiraaccess@gmail.com"
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          STORY_KEY: ${{ github.event.inputs.story_key }}
+        run: |
+          set -e
+          echo "Check /myself:"
+          curl -sS -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" -H 'Accept: application/json' \
+            "${JIRA_BASE_URL}/rest/api/3/myself" | head -c 400; echo
+          echo "Search SCRUM-1:"
+          curl -sS -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+            -G --data-urlencode "jql=issueKey=${STORY_KEY}" \
+            "${JIRA_BASE_URL}/rest/api/3/search?fields=summary" | head -c 400; echo
+
       - name: Run generator (no external deps)
         env:
           JIRA_BASE_URL: "https://altimetrikjiraaccess.atlassian.net"
