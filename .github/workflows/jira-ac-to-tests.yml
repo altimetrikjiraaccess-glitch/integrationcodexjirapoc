@@ -52,7 +52,7 @@ jobs:
             -G --data-urlencode "jql=issueKey=${STORY_KEY}" \
             "${JIRA_BASE_URL}/rest/api/3/search?fields=summary" | head -c 400; echo
 
-      # 3) Generate Python test files from AC and create/link Jira Test issues
+      # 3) Generate Gherkin (LLM with fallback) and update Jira
       - name: Generate Gherkin with LLM (fallback to rules) and update Jira
         shell: bash
         env:
@@ -96,28 +96,33 @@ jobs:
               }
 
           def http_get(url, headers=None):
-              h=_auth_header();
-              if headers: h.update(headers)
+              h = _auth_header()
+              if headers:
+                  h.update(headers)
               req = urllib.request.Request(url, headers=h, method="GET")
               with urllib.request.urlopen(req, timeout=60) as r:
                   return r.status, r.read().decode()
 
           def http_post(url, payload_dict, headers=None):
-              h = _auth_header(); h["Content-Type"] = "application/json"
-              if headers: h.update(headers)
+              h = _auth_header()
+              h["Content-Type"] = "application/json"
+              if headers:
+                  h.update(headers)
               body = json.dumps(payload_dict).encode()
               req = urllib.request.Request(url, headers=h, data=body, method="POST")
               with urllib.request.urlopen(req, timeout=60) as r:
                   return r.status, r.read().decode()
 
           def http_put(url, payload_dict, headers=None):
-              h = _auth_header(); h["Content-Type"] = "application/json"
-              if headers: h.update(headers)
+              h = _auth_header()
+              h["Content-Type"] = "application/json"
+              if headers:
+                  h.update(headers)
               body = json.dumps(payload_dict).encode()
               req = urllib.request.Request(url, headers=h, data=body, method="PUT")
               with urllib.request.urlopen(req, timeout=60) as r:
-                  return r.status, r.read().decode()    
-                  
+                  return r.status, r.read().decode()
+
           # ------------------- Jira helpers -------------------
           def get_story_with_ac(key):
               url = f"{JIRA_BASE}/rest/api/3/issue/{key}?fields=" + urllib.parse.quote(f"summary,{AC_FIELD_ID}")
@@ -129,7 +134,7 @@ jobs:
               ac_node = js["fields"].get(AC_FIELD_ID)
               return summary, ac_node
 
-           def search_issue(jql, fields="key,summary"):
+          def search_issue(jql, fields="key,summary"):
               url = f"{JIRA_BASE}/rest/api/3/search?{urllib.parse.urlencode({'jql': jql, 'fields': fields})}"
               code, txt = http_get(url)
               if code != 200:
@@ -137,7 +142,7 @@ jobs:
               return json.loads(txt).get("issues", [])
 
           def ensure_link(child_key, parent_key):
-              payload = {"type":{"name":"Relates"}, "inwardIssue":{"key":child_key}, "outwardIssue":{"key":parent_key}}
+              payload = {"type": {"name": LINK_TYPE}, "inwardIssue": {"key": child_key}, "outwardIssue": {"key": parent_key}}
               try:
                   http_post(f"{JIRA_BASE}/rest/api/3/issueLink", payload)
               except Exception:
@@ -153,35 +158,43 @@ jobs:
               if js["fields"].get("description") is None:
                   http_put(f"{JIRA_BASE}/rest/api/3/issue/{issue_key}", {"fields": {"description": body_text}})
 
-            # ------------------- AC normalization -------------------
+          # ------------------- AC normalization -------------------
           bullet_re = re.compile(r"^\s*([•*\-\d\)]+)\s*", re.MULTILINE)
-          
+
           def flatten_adf(val):
               def walk(n, out):
                   if isinstance(n, dict):
                       if n.get("type") == "text":
-                          t = n.get("text","")
-                          if t: out.append(t)
-                      for k in ("content","items"):
-                          if k in n: walk(n[k], out)
+                          t = n.get("text", "")
+                          if t:
+                              out.append(t)
+                      for k in ("content", "items"):
+                          if k in n:
+                              walk(n[k], out)
                   elif isinstance(n, list):
-                      for c in n: walk(c, out)
-              buf=[]; walk(val, buf)
+                      for c in n:
+                          walk(c, out)
+              buf = []
+              walk(val, buf)
               return "".join(buf)
 
           def normalize_blocks(val):
-              if val is None: return []
-              if isinstance(val, dict): txt = flatten_adf(val)
-              elif isinstance(val, list): txt = "\n".join(str(x or "") for x in val)
-              else: txt = str(val)
-              items=[]
+              if val is None:
+                  return []
+              if isinstance(val, dict):
+                  txt = flatten_adf(val)
+              elif isinstance(val, list):
+                  txt = "\n".join(str(x or "") for x in val)
+              else:
+                  txt = str(val)
+              items = []
               for p in re.split(r"\r?\n", txt):
                   t = bullet_re.sub("", p).strip()
-                  if t: items.append(t)
+                  if t:
+                      items.append(t)
               return items
 
-
-       # ------------------- LLM (optional) -------------------
+          # ------------------- LLM (optional) -------------------
           def llm_gherkin(ac_text, title):
               """
               Use OpenAI Responses API to produce clean Given/When/Then steps.
@@ -190,10 +203,7 @@ jobs:
               if not OAI_KEY:
                   return None
               try:
-                  # Lazy import; pip not required because we use stdlib here. We'll shell-install openai in the step if desired.
-                  import json, http.client as _hc, ssl as _ssl, os as _os
-                  # Minimal HTTP call to OpenAI v1 Responses API to avoid extra deps.
-                  # You can swap this with `openai` SDK if you prefer (pip install openai).
+                  import json as _json, http.client as _hc, ssl as _ssl
                   host = "api.openai.com"
                   conn = _hc.HTTPSConnection(host, context=_ssl.create_default_context())
                   prompt = (
@@ -204,7 +214,7 @@ jobs:
                       "Keep steps specific, testable, deterministic. Avoid UI fluff.\n\n"
                       f"Acceptance Criterion:\n{ac_text}\n"
                   )
-                  body = json.dumps({
+                  body = _json.dumps({
                       "model": OAI_MODEL,
                       "input": prompt,
                       "temperature": 0.2,
@@ -218,79 +228,6 @@ jobs:
                   data = resp.read().decode()
                   if resp.status != 200:
                       return None
-                  j = json.loads(data)
-                  # The python SDK exposes response.output_text; raw REST returns candidates.
-                  # Try common shapes defensively:
+                  j = _json.loads(data)
                   text = (
                       j.get("output_text")
-                      or j.get("content")
-                      or j.get("response", {}).get("output_text")
-                  )
-                  if not text:
-                      # dig into top-level 'output' (older shape)
-                      out = j.get("output") or j.get("choices") or []
-                      if isinstance(out, list) and out:
-                          # heuristically grab text
-                          text = out[0].get("content") or out[0].get("text")
-                  if not text:
-                      return None
-                  text = str(text).strip()
-                  # Ensure title prefix
-                  if not text.lower().startswith("scenario:"):
-                      text = f"Scenario: {title}\n{text}"
-                  return text
-              except Exception:
-                  return None
-
-          def rule_gherkin(ac_text, title):
-              has_kw = re.search(r"\b(Given|When|Then|And|But)\b", ac_text, re.I)
-              if has_kw:
-                  # Normalize casing & line breaks
-                  body = re.sub(r"\s*(Given|When|Then|And|But)\s*", lambda m: "\n"+m.group(1).title()+" ", ac_text, flags=re.I).strip()
-                  return f"Scenario: {title}\n{body}\n"
-              return (
-                  f"Scenario: {title}\n"
-                  "Given the system is ready\n"
-                  "When the user performs the described action\n"
-                  f"Then {ac_text}\n"
-              )
-
-          # ------------------- Main -------------------
-          story_summary, ac_val = get_story_with_ac(STORY_KEY)
-          ac_items = normalize_blocks(ac_val) or ["No Acceptance Criteria provided."]
-
-          feat_dir = pathlib.Path("tests/generated") / STORY_KEY / "gherkin"
-          feat_dir.mkdir(parents=True, exist_ok=True)
-          feature_path = feat_dir / f"{STORY_KEY.lower()}_ac.feature"
-
-          lines = [f"Feature: {STORY_KEY} — {story_summary}\n"]
-          for i, ac in enumerate(ac_items, start=1):
-              title = f"{STORY_KEY} - AC {i}"
-              g = llm_gherkin(ac, title) or rule_gherkin(ac, title)
-              lines.append(g)
-
-              # Update matching Jira Test
-              jql = f'project="{STORY_KEY.split("-")[0]}" AND summary~"[Auto-Test] {STORY_KEY} - AC {i}" ORDER BY created DESC'
-              found = search_issue(jql, fields="key")
-              if not found:
-                  print(f"WARNING: No matching Test issue for AC {i}")
-                  continue
-              test_key = found[0]["key"]
-              comment = f"*Auto-generated Gherkin for {STORY_KEY} AC {i}:*\n\n{g}"
-              add_comment(test_key, comment)
-              set_description_if_empty(test_key, g)
-              ensure_link(test_key, STORY_KEY)
-              print(f"Updated {test_key} with Gherkin and ensured link")
-
-          feature_path.write_text("\n".join(lines), encoding="utf-8")
-          print("Wrote feature:", feature_path)
-          PY
-
-          # Commit .feature file if changed
-          git add tests/generated/**/gherkin/*.feature || true
-          if git diff --cached --quiet; then
-            echo "No Gherkin changes to commit."
-          else
-            git -c user.name="codex-bot" -c user.email="codex-bot@users.noreply.github.com" commit -m "chore(tests): add LLM Gherkin scenarios for ${STORY_KEY}"
-            git push origin HEAD
-          fi
