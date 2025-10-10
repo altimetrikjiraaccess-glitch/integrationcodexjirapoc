@@ -54,6 +54,7 @@ jobs:
 
       # 3) Generate Python test files from AC and create/link Jira Test issues
       - name: Run generator (no external deps)
+        shell: bash
         env:
           JIRA_BASE_URL: "https://altimetrikjiraaccess.atlassian.net"
           JIRA_EMAIL: "altimetrikjiraaccess@gmail.com"
