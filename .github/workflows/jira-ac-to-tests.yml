@@ -53,7 +53,7 @@ jobs:
             "${JIRA_BASE_URL}/rest/api/3/search?fields=summary" | head -c 400; echo
 
       # 3) Generate Python test files from AC and create/link Jira Test issues
-      - name: Run generator (no external deps)
+      - name: Generate Gherkin with LLM (fallback to rules) and update Jira
         shell: bash
         env:
           JIRA_BASE_URL: "https://altimetrikjiraaccess.atlassian.net"
