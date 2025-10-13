@@ -84,7 +84,7 @@ jobs:
           JIRA_TOKEN  = os.environ["JIRA_API_TOKEN"]
           STORY_KEY   = os.environ.get("STORY_KEY", "SCRUM-1")
           AC_FIELD_ID = os.environ.get("AC_FIELD_ID", "customfield_10059")
-          TEST_TYPE   = os.environ.get("TEST_ISSUE_TYPE", "Test")
+          TEST_TYPE   = os.environ.get("TEST_ISSUE_TYPE", "Test Case")
           LINK_TYPE   = os.environ.get("ISSUE_LINK_TYPE", "Relates")
 
           OAI_KEY     = os.environ.get("OPENAI_API_KEY") or ""
