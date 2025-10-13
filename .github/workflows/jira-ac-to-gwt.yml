@@ -1,0 +1,345 @@
+name: Generate GWT tests from Jira AC and push + link
+
+on:
+  workflow_dispatch:
+    inputs:
+      story_key:
+        description: 'Jira story key'
+        required: true
+        default: 'SCRUM-1'
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Sanity check that the Jira token exists
+      - name: Check Jira token present (length only)
+        shell: bash
+        env:
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: |
+          if [ -z "${JIRA_API_TOKEN}" ]; then
+            echo "JIRA_API_TOKEN is EMPTY. Add it in Repo Settings → Secrets and rerun."
+            exit 1
+          fi
+          echo "JIRA_API_TOKEN length: ${#JIRA_API_TOKEN}"
+
+      # Optional: quick Jira visibility check
+      - name: Diagnose Jira auth + visibility
+        shell: bash
+        env:
+          JIRA_BASE_URL: "https://altimetrikjiraaccess.atlassian.net"
+          JIRA_EMAIL: "altimetrikjiraaccess@gmail.com"
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          STORY_KEY: ${{ github.event.inputs.story_key }}
+        run: |
+          set -e
+          echo "Check /myself:"
+          curl -sS -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" -H 'Accept: application/json' \
+            "${JIRA_BASE_URL}/rest/api/3/myself" | head -c 400; echo
+          echo "Search by key:"
+          curl -sS -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+            -G --data-urlencode "jql=issueKey=${STORY_KEY}" \
+            "${JIRA_BASE_URL}/rest/api/3/search?fields=summary" | head -c 400; echo
+
+      - name: Read Jira AC, convert to GWT (LLM optional), commit files, create & link Jira Tests
+        shell: bash
+        env:
+          # --- Jira config ---
+          JIRA_BASE_URL: "https://altimetrikjiraaccess.atlassian.net"
+          JIRA_EMAIL: "altimetrikjiraaccess@gmail.com"
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          STORY_KEY: ${{ github.event.inputs.story_key }}
+          AC_FIELD_ID: "customfield_10059"
+          TEST_ISSUE_TYPE: "Test"     # Adjust if your Jira uses a different name ("Test Case", etc.)
+          ISSUE_LINK_TYPE: "Relates"  # Adjust to your scheme if needed
+
+          # --- Git author for commits ---
+          GIT_AUTHOR_NAME: "codex-bot"
+          GIT_AUTHOR_EMAIL: "codex-bot@users.noreply.github.com"
+
+          # --- OpenAI (optional) ---
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}   # Optional; if missing, fallback is used
+          OPENAI_MODEL: "gpt-4o-mini"                     # Stable chat.completions model
+
+        run: |
+          set -e
+          python - <<'PY'
+          import base64, json, os, pathlib, re, subprocess, sys, urllib.parse, urllib.request
+
+          # -------- Config --------
+          JIRA_BASE   = os.environ["JIRA_BASE_URL"].rstrip("/")
+          JIRA_EMAIL  = os.environ["JIRA_EMAIL"]
+          JIRA_TOKEN  = os.environ["JIRA_API_TOKEN"]
+          STORY_KEY   = os.environ.get("STORY_KEY", "SCRUM-1")
+          AC_FIELD_ID = os.environ.get("AC_FIELD_ID", "customfield_10059")
+          TEST_TYPE   = os.environ.get("TEST_ISSUE_TYPE", "Test")
+          LINK_TYPE   = os.environ.get("ISSUE_LINK_TYPE", "Relates")
+
+          OAI_KEY     = os.environ.get("OPENAI_API_KEY") or ""
+          OAI_MODEL   = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+
+          # -------- HTTP helpers (with good error messages) --------
+          import urllib.error
+          def _auth_header():
+              b = base64.b64encode(f"{JIRA_EMAIL}:{JIRA_TOKEN}".encode()).decode()
+              return {"Authorization": f"Basic {b}", "Accept": "application/json"}
+
+          def _do(req):
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as r:
+                      return r.status, r.read().decode()
+              except urllib.error.HTTPError as e:
+                  body = e.read().decode(errors="replace") if hasattr(e, "read") else ""
+                  raise RuntimeError(f"HTTP {e.code} on {getattr(e, 'url', 'unknown')} :: {body[:600]}")
+
+          def http_get(url, headers=None):
+              h = _auth_header()
+              if headers: h.update(headers)
+              req = urllib.request.Request(url, headers=h, method="GET")
+              return _do(req)
+
+          def http_post(url, payload, headers=None):
+              h = _auth_header(); h["Content-Type"] = "application/json"
+              if headers: h.update(headers)
+              data = json.dumps(payload).encode()
+              req = urllib.request.Request(url, headers=h, data=data, method="POST")
+              return _do(req)
+
+          def http_put(url, payload, headers=None):
+              h = _auth_header(); h["Content-Type"] = "application/json"
+              if headers: h.update(headers)
+              data = json.dumps(payload).encode()
+              req = urllib.request.Request(url, headers=h, data=data, method="PUT")
+              return _do(req)
+
+          # -------- Jira operations --------
+          def get_story_with_ac(key):
+              url = f"{JIRA_BASE}/rest/api/3/issue/{key}?fields=" + urllib.parse.quote(f"summary,{AC_FIELD_ID}")
+              code, txt = http_get(url)
+              if code != 200:
+                  raise RuntimeError(f"GET issue failed {code}: {txt[:400]}")
+              js = json.loads(txt)
+              return js["fields"].get("summary","(no summary)"), js["fields"].get(AC_FIELD_ID)
+
+          def create_test_issue(project_key, summary, description_plain):
+              payload = {
+                  "fields": {
+                      "project": {"key": project_key},
+                      "summary": summary,
+                      "issuetype": {"name": TEST_TYPE},
+                      "description": description_plain,
+                  }
+              }
+              code, txt = http_post(f"{JIRA_BASE}/rest/api/3/issue", payload)
+              if code not in (200, 201):
+                  raise RuntimeError(f"Create issue failed: {code} {txt[:400]}")
+              return json.loads(txt)["key"]
+
+          def link_issues(inward_key, outward_key):
+              payload = {"type": {"name": LINK_TYPE}, "inwardIssue": {"key": inward_key}, "outwardIssue": {"key": outward_key}}
+              code, txt = http_post(f"{JIRA_BASE}/rest/api/3/issueLink", payload)
+              if code not in (200, 201, 204):
+                  raise RuntimeError(f"Link issues failed: {code} {txt[:400]}")
+
+          def add_comment(issue_key, body_text):
+              http_post(f"{JIRA_BASE}/rest/api/3/issue/{issue_key}/comment", {"body": body_text})
+
+          def search_issue(jql, fields="key,summary"):
+              url = f"{JIRA_BASE}/rest/api/3/search?{urllib.parse.urlencode({'jql': jql, 'fields': fields})}"
+              code, txt = http_get(url)
+              if code != 200:
+                  raise RuntimeError(f"Search failed {code}: {txt[:400]}")
+              return json.loads(txt).get("issues", [])
+
+          def set_description_if_empty(issue_key, body_text):
+              code, txt = http_get(f"{JIRA_BASE}/rest/api/3/issue/{issue_key}?fields=description")
+              js = json.loads(txt)
+              if js["fields"].get("description") is None:
+                  http_put(f"{JIRA_BASE}/rest/api/3/issue/{issue_key}", {"fields": {"description": body_text}})
+
+          # -------- AC parsing --------
+          bullet_re = re.compile(r"^\s*([•*\-\d\)]+)\s*", re.MULTILINE)
+          def flatten_adf(node):
+              def walk(n, out):
+                  if isinstance(n, dict):
+                      if n.get("type") == "text":
+                          t = n.get("text","")
+                          if t: out.append(t)
+                      for k in ("content","items"):
+                          if k in n: walk(n[k], out)
+                  elif isinstance(n, list):
+                      for c in n: walk(c, out)
+              buf=[]; walk(node, buf)
+              return "".join(buf)
+
+          def normalize_ac_blocks(val):
+              if val is None: return []
+              if isinstance(val, dict): txt = flatten_adf(val)
+              elif isinstance(val, list): txt = "\n".join(str(x or "") for x in val)
+              else: txt = str(val)
+              items=[]
+              for p in re.split(r"\r?\n", txt):
+                  t = bullet_re.sub("", p).strip()
+                  if t: items.append(t)
+              # de-dupe keep order
+              seen, out = set(), []
+              for x in items:
+                  if x not in seen:
+                      seen.add(x); out.append(x)
+              return out
+
+          # -------- LLM and fallback --------
+          def llm_gherkin(ac_text, title):
+              if not OAI_KEY:
+                  return None
+              try:
+                  import json as _json, http.client as _hc, ssl as _ssl
+                  conn = _hc.HTTPSConnection("api.openai.com", context=_ssl.create_default_context())
+                  prompt = (
+                      "Rewrite the acceptance criterion into a concise Gherkin scenario.\n"
+                      "Return ONLY:\n"
+                      "Scenario: <short title>\n"
+                      "Given ...\nWhen ...\nThen ...\n"
+                      "Keep steps specific, testable, deterministic.\n\n"
+                      f"Acceptance Criterion:\n{ac_text}\n"
+                  )
+                  body = _json.dumps({
+                      "model": OAI_MODEL,
+                      "messages": [
+                          {"role":"system","content":"You generate precise, testable Gherkin scenarios."},
+                          {"role":"user","content": prompt}
+                      ],
+                      "temperature": 0.2
+                  })
+                  headers = {"Authorization": f"Bearer {OAI_KEY}", "Content-Type": "application/json"}
+                  conn.request("POST", "/v1/chat/completions", body=body, headers=headers)
+                  resp = conn.getresponse()
+                  data = resp.read().decode()
+                  if resp.status != 200:
+                      return None
+                  j = _json.loads(data)
+                  text = j["choices"][0]["message"]["content"].strip()
+                  if not text.lower().startswith("scenario:"):
+                      text = f"Scenario: {title}\n{text}"
+                  return text
+              except Exception:
+                  return None
+
+          def rule_gherkin(ac_text, title):
+              has_kw = re.search(r"\b(Given|When|Then|And|But)\b", ac_text, re.I)
+              if has_kw:
+                  body = re.sub(r"\s*(Given|When|Then|And|But)\s*", lambda m: "\n"+m.group(1).title()+" ", ac_text, flags=re.I).strip()
+                  return f"Scenario: {title}\n{body}\n"
+              return f"Scenario: {title}\nGiven the system is ready\nWhen the user performs the described action\nThen {ac_text}\n"
+
+          # -------- Write repo files --------
+          def write_repo_files(story_key, story_summary, ac_items, gwt_texts):
+              base = pathlib.Path("tests/generated") / story_key
+              base.mkdir(parents=True, exist_ok=True)
+
+              # README
+              (base / "README.md").write_text(
+                  f"# Auto-generated tests for {story_key}\n\n"
+                  f"**Story:** {story_key} — {story_summary}\n\n"
+                  f"Generated from AC field `{AC_FIELD_ID}`.\n\n",
+                  encoding="utf-8"
+              )
+
+              # .feature (Gherkin)
+              feat_dir = base / "gherkin"
+              feat_dir.mkdir(parents=True, exist_ok=True)
+              feature_path = feat_dir / f"{story_key.lower()}_ac.feature"
+              lines = [f"Feature: {story_key} — {story_summary}\n"]
+              for g in gwt_texts:
+                  lines.append(g.strip() + "\n")
+              feature_path.write_text("\n".join(lines), encoding="utf-8")
+
+              # pytest placeholders, one per AC
+              safe_story = story_key.lower().replace("-", "_")
+              created = [str(feature_path), str(base / "README.md")]
+              for i, ac in enumerate(ac_items, start=1):
+                  fname = base / f"test_{safe_story}_ac_{i}.py"
+                  text = (
+                      '"""' + "\n"
+                      f"Auto-generated from Jira story {story_key}\n"
+                      f"AC {i}: {ac}\n"
+                      '"""' + "\n"
+                      f"def test_{safe_story}_ac_{i}():\n"
+                      "    # Implement according to AC / Gherkin\n"
+                      f"    # {ac}\n"
+                      "    assert True\n"
+                  )
+                  fname.write_text(text, encoding="utf-8")
+                  created.append(str(fname))
+              return created
+
+          def git(cmd):
+              r = subprocess.run(cmd, check=True, text=True, capture_output=True)
+              return r.stdout.strip()
+
+          def commit_and_push(files, message):
+              if not files: return
+              git(["git", "config", "user.name", os.getenv("GIT_AUTHOR_NAME", "codex-bot")])
+              git(["git", "config", "user.email", os.getenv("GIT_AUTHOR_EMAIL", "codex-bot@users.noreply.github.com")])
+              git(["git", "add"] + files)
+              rc = subprocess.run(["git", "diff", "--cached", "--quiet"])
+              if rc.returncode == 0:
+                  print("No changes to commit.")
+                  return
+              git(["git", "commit", "-m", message])
+              git(["git", "push", "origin", "HEAD"])
+
+          # -------- Main flow --------
+          project_key = STORY_KEY.split("-")[0]
+          summary, ac_val = get_story_with_ac(STORY_KEY)
+          ac_items = normalize_ac_blocks(ac_val) or ["No Acceptance Criteria provided."]
+
+          gwt_texts = []
+          for i, ac in enumerate(ac_items, start=1):
+              title = f"{STORY_KEY} - AC {i}"
+              g = llm_gherkin(ac, title) or rule_gherkin(ac, title)
+              gwt_texts.append(g)
+
+          created_files = write_repo_files(STORY_KEY, summary, ac_items, gwt_texts)
+          commit_and_push(created_files, f"chore(tests): auto-generate GWT tests from {STORY_KEY} AC")
+
+          # Create Jira Tests + link + comment GWT
+          created_issue_keys = []
+          for i, (ac, g) in enumerate(zip(ac_items, gwt_texts), start=1):
+              test_summary = f"[Auto-Test] {STORY_KEY} - AC {i}"
+              description = (
+                  f"Generated from story: {STORY_KEY} — {summary}\n\n"
+                  f"Acceptance Criteria ({i}/{len(ac_items)}):\n{ac}\n\n"
+                  "Gherkin:\n"
+                  f"{g}\n"
+              )
+              test_key = create_test_issue(project_key, test_summary, description)
+              link_issues(test_key, STORY_KEY)
+              add_comment(test_key, f"*Auto-generated Gherkin for {STORY_KEY} AC {i}:*\n\n{g}")
+              set_description_if_empty(test_key, g)
+              created_issue_keys.append(test_key)
+              print(f"Created {test_key} and linked to {STORY_KEY}")
+
+          print("✅ Done. Created Jira Test issues:", created_issue_keys)
+          PY
+
+          # Commit any last-minute changes (e.g., re-runs) in case feature files differ
+          git add tests/generated/** || true
+          if git diff --cached --quiet; then
+            echo "No additional changes to commit."
+          else
+            git -c user.name="codex-bot" -c user.email="codex-bot@users.noreply.github.com" commit -m "chore(tests): finalize generated files"
+            git push origin HEAD
+          fi
