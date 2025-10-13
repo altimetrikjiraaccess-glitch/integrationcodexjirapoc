@@ -124,6 +124,40 @@ jobs:
               req = urllib.request.Request(url, headers=h, data=data, method="PUT")
               return _do(req)
 
+
+  # ---------- ADF helpers ----------
+def adf_paragraph(text: str):
+    return {"type": "paragraph", "content": [{"type": "text", "text": text}]}
+
+def adf_code_block(text: str, language: str = None):
+    block = {"type": "codeBlock", "content": [{"type": "text", "text": text}]}
+    if language:
+        block["attrs"] = {"language": language}
+    return block
+
+def adf_heading(text: str, level: int = 3):
+    return {"type": "heading", "attrs": {"level": level}, "content": [{"type": "text", "text": text}]}
+
+def adf_doc(blocks):
+    return {"type": "doc", "version": 1, "content": blocks}
+
+def adf_from_plain(text: str):
+    # split on blank lines into paragraphs
+    blocks = []
+    for para in re.split(r"\n\s*\n", text.strip()):
+        for line in para.splitlines():
+            blocks.append(adf_paragraph(line))
+        blocks.append(adf_paragraph(""))  # spacer
+    if blocks and blocks[-1] == adf_paragraph(""):
+        blocks.pop()
+    return adf_doc(blocks)
+
+def adf_from_gherkin(title: str, gherkin_text: str):
+    # Heading + code block for neat rendering
+    blocks = [adf_heading(title, level=3), adf_code_block(gherkin_text, language="gherkin")]
+    return adf_doc(blocks)
+         
+
           # -------- Jira operations --------
           def get_story_with_ac(key):
               url = f"{JIRA_BASE}/rest/api/3/issue/{key}?fields=" + urllib.parse.quote(f"summary,{AC_FIELD_ID}")
@@ -185,40 +219,6 @@ jobs:
                         desc_adf = adf_from_gherkin(title_for_block, gherkin_text)
                         http_put(f"{JIRA_BASE}/rest/api/3/issue/{issue_key}",
                        {"fields": {"description": desc_adf}})
-
-
-         # ---------- ADF helpers ----------
-def adf_paragraph(text: str):
-    return {"type": "paragraph", "content": [{"type": "text", "text": text}]}
-
-def adf_code_block(text: str, language: str = None):
-    block = {"type": "codeBlock", "content": [{"type": "text", "text": text}]}
-    if language:
-        block["attrs"] = {"language": language}
-    return block
-
-def adf_heading(text: str, level: int = 3):
-    return {"type": "heading", "attrs": {"level": level}, "content": [{"type": "text", "text": text}]}
-
-def adf_doc(blocks):
-    return {"type": "doc", "version": 1, "content": blocks}
-
-def adf_from_plain(text: str):
-    # split on blank lines into paragraphs
-    blocks = []
-    for para in re.split(r"\n\s*\n", text.strip()):
-        for line in para.splitlines():
-            blocks.append(adf_paragraph(line))
-        blocks.append(adf_paragraph(""))  # spacer
-    if blocks and blocks[-1] == adf_paragraph(""):
-        blocks.pop()
-    return adf_doc(blocks)
-
-def adf_from_gherkin(title: str, gherkin_text: str):
-    # Heading + code block for neat rendering
-    blocks = [adf_heading(title, level=3), adf_code_block(gherkin_text, language="gherkin")]
-    return adf_doc(blocks)
-         
 
           # -------- AC parsing --------
           bullet_re = re.compile(r"^\s*([•*\-\d\)]+)\s*", re.MULTILINE)
