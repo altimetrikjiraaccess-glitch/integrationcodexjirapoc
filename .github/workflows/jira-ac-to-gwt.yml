@@ -212,7 +212,7 @@ jobs:
                   raise RuntimeError(f"Search failed {code}: {txt[:400]}")
               return json.loads(txt).get("issues", [])
 
-        def set_description_if_empty(issue_key, gherkin_text, title_for_block):
+          def set_description_if_empty(issue_key, gherkin_text, title_for_block):
                 code, txt = http_get(f"{JIRA_BASE}/rest/api/3/issue/{issue_key}?fields=description")
                 js = json.loads(txt)
                 if js["fields"].get("description") is None:
