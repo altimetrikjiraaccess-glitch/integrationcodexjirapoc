@@ -62,7 +62,7 @@ jobs:
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
           STORY_KEY: ${{ github.event.inputs.story_key }}
           AC_FIELD_ID: "customfield_10059"
-          TEST_ISSUE_TYPE: "Test"     # Adjust if your Jira uses a different name ("Test Case", etc.)
+          TEST_ISSUE_TYPE: "Test Case"     # Adjust if your Jira uses a different name ("Test Case", etc.)
           ISSUE_LINK_TYPE: "Relates"  # Adjust to your scheme if needed
 
           # --- Git author for commits ---
