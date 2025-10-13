@@ -133,19 +133,33 @@ jobs:
               js = json.loads(txt)
               return js["fields"].get("summary","(no summary)"), js["fields"].get(AC_FIELD_ID)
 
-          def create_test_issue(project_key, summary, description_plain):
-              payload = {
-                  "fields": {
-                      "project": {"key": project_key},
-                      "summary": summary,
-                      "issuetype": {"name": TEST_TYPE},
-                      "description": description_plain,
-                  }
-              }
-              code, txt = http_post(f"{JIRA_BASE}/rest/api/3/issue", payload)
-              if code not in (200, 201):
-                  raise RuntimeError(f"Create issue failed: {code} {txt[:400]}")
-              return json.loads(txt)["key"]
+
+
+          def create_test_issue(project_key, summary, description_plain_or_adf, issue_type_name=None, issue_type_id=None):
+                  # resolve issue_type_id as you already added (createmeta)...
+                  if not issue_type_id:
+                        issue_type_id = resolve_issue_type_id(project_key, preferred_name=issue_type_name)
+
+                  # Accept either prebuilt ADF dict or plain string
+                  if isinstance(description_plain_or_adf, dict) and description_plain_or_adf.get("type") == "doc":
+                        description_adf = description_plain_or_adf
+                  else:
+                        description_adf = adf_from_plain(str(description_plain_or_adf))
+
+                payload = {
+                      "fields": {
+                                  "project": {"key": project_key},
+                                  "summary": summary,
+                                  "issuetype": {"id": issue_type_id},
+                                  "description": description_adf,   # <-- ADF here
+                                }
+                        }
+                              
+                   code, text = http_post(f"{JIRA_BASE}/rest/api/3/issue", payload)
+                   if code not in (200, 201):
+                          raise RuntimeError(f"Create issue failed: {code} {text[:400]}")
+                   return json.loads(text)["key"]
+    
 
           def link_issues(inward_key, outward_key):
               payload = {"type": {"name": LINK_TYPE}, "inwardIssue": {"key": inward_key}, "outwardIssue": {"key": outward_key}}
@@ -153,9 +167,10 @@ jobs:
               if code not in (200, 201, 204):
                   raise RuntimeError(f"Link issues failed: {code} {txt[:400]}")
 
-          def add_comment(issue_key, body_text):
-              http_post(f"{JIRA_BASE}/rest/api/3/issue/{issue_key}/comment", {"body": body_text})
-
+           def add_comment(issue_key, title_for_block, gherkin_text):
+              body = adf_from_gherkin(title_for_block, gherkin_text)
+              http_post(f"{JIRA_BASE}/rest/api/3/issue/{issue_key}/comment", {"body": body})
+              
           def search_issue(jql, fields="key,summary"):
               url = f"{JIRA_BASE}/rest/api/3/search?{urllib.parse.urlencode({'jql': jql, 'fields': fields})}"
               code, txt = http_get(url)
@@ -163,11 +178,47 @@ jobs:
                   raise RuntimeError(f"Search failed {code}: {txt[:400]}")
               return json.loads(txt).get("issues", [])
 
-          def set_description_if_empty(issue_key, body_text):
-              code, txt = http_get(f"{JIRA_BASE}/rest/api/3/issue/{issue_key}?fields=description")
-              js = json.loads(txt)
-              if js["fields"].get("description") is None:
-                  http_put(f"{JIRA_BASE}/rest/api/3/issue/{issue_key}", {"fields": {"description": body_text}})
+        def set_description_if_empty(issue_key, gherkin_text, title_for_block):
+                code, txt = http_get(f"{JIRA_BASE}/rest/api/3/issue/{issue_key}?fields=description")
+                js = json.loads(txt)
+                if js["fields"].get("description") is None:
+                        desc_adf = adf_from_gherkin(title_for_block, gherkin_text)
+                        http_put(f"{JIRA_BASE}/rest/api/3/issue/{issue_key}",
+                       {"fields": {"description": desc_adf}})
+
+
+         # ---------- ADF helpers ----------
+def adf_paragraph(text: str):
+    return {"type": "paragraph", "content": [{"type": "text", "text": text}]}
+
+def adf_code_block(text: str, language: str = None):
+    block = {"type": "codeBlock", "content": [{"type": "text", "text": text}]}
+    if language:
+        block["attrs"] = {"language": language}
+    return block
+
+def adf_heading(text: str, level: int = 3):
+    return {"type": "heading", "attrs": {"level": level}, "content": [{"type": "text", "text": text}]}
+
+def adf_doc(blocks):
+    return {"type": "doc", "version": 1, "content": blocks}
+
+def adf_from_plain(text: str):
+    # split on blank lines into paragraphs
+    blocks = []
+    for para in re.split(r"\n\s*\n", text.strip()):
+        for line in para.splitlines():
+            blocks.append(adf_paragraph(line))
+        blocks.append(adf_paragraph(""))  # spacer
+    if blocks and blocks[-1] == adf_paragraph(""):
+        blocks.pop()
+    return adf_doc(blocks)
+
+def adf_from_gherkin(title: str, gherkin_text: str):
+    # Heading + code block for neat rendering
+    blocks = [adf_heading(title, level=3), adf_code_block(gherkin_text, language="gherkin")]
+    return adf_doc(blocks)
+         
 
           # -------- AC parsing --------
           bullet_re = re.compile(r"^\s*([•*\-\d\)]+)\s*", re.MULTILINE)
@@ -319,16 +370,18 @@ jobs:
           created_issue_keys = []
           for i, (ac, g) in enumerate(zip(ac_items, gwt_texts), start=1):
               test_summary = f"[Auto-Test] {STORY_KEY} - AC {i}"
-              description = (
-                  f"Generated from story: {STORY_KEY} — {summary}\n\n"
-                  f"Acceptance Criteria ({i}/{len(ac_items)}):\n{ac}\n\n"
-                  "Gherkin:\n"
-                  f"{g}\n"
-              )
-              test_key = create_test_issue(project_key, test_summary, description)
+              desc_text = (
+                            f"Generated from story: {STORY_KEY}\n\n"
+                            f"Acceptance Criterion ({i}/{len(ac_items)}):\n{ac}\n\n"
+                            f"Gherkin:\n{g}\n"
+                          )
+              test_key = create_test_issue(project_key, f"[Auto-Test] {STORY_KEY} - AC {i}",
+                             adf_from_gherkin(title, g),   # send ADF directly
+                             issue_type_name=TEST_TYPE, issue_type_id=TEST_TYPE_ID)
+
               link_issues(test_key, STORY_KEY)
-              add_comment(test_key, f"*Auto-generated Gherkin for {STORY_KEY} AC {i}:*\n\n{g}")
-              set_description_if_empty(test_key, g)
+              add_comment(test_key, title, g)  # ADF comment
+              set_description_if_empty(test_key, g, title)
               created_issue_keys.append(test_key)
               print(f"Created {test_key} and linked to {STORY_KEY}")
 
