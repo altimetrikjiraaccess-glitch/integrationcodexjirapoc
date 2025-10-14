@@ -200,7 +200,7 @@ jobs:
               if code not in (200, 201, 204):
                   raise RuntimeError(f"Link issues failed: {code} {txt[:400]}")
 
-           def add_comment(issue_key, title_for_block, gherkin_text):
+          def add_comment(issue_key, title_for_block, gherkin_text):
               body = adf_from_gherkin(title_for_block, gherkin_text)
               http_post(f"{JIRA_BASE}/rest/api/3/issue/{issue_key}/comment", {"body": body})
               
