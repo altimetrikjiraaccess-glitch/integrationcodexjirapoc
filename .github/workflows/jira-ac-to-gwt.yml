@@ -190,7 +190,7 @@ jobs:
                             }
                    code, text = http_post(f"{JIRA_BASE}/rest/api/3/issue", payload)
                    if code not in (200, 201):
-                          raise RuntimeError(f"Create issue failed: {code} {text[:400]}")
+                                raise RuntimeError(f"Create issue failed: {code} {text[:400]}")
                    return json.loads(text)["key"]
     
 
