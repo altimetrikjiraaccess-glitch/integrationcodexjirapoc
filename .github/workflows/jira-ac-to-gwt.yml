@@ -180,14 +180,14 @@ jobs:
                   else:
                         description_adf = adf_from_plain(str(description_plain_or_adf))
 
-                 payload = {
+                  payload = {
                       "fields": {
                                   "project": {"key": project_key},
                                   "summary": summary,
                                   "issuetype": {"id": issue_type_id},
                                   "description": description_adf,   # <-- ADF here
                                 }
-                        }
+                            }
                               
                    code, text = http_post(f"{JIRA_BASE}/rest/api/3/issue", payload)
                    if code not in (200, 201):
@@ -297,7 +297,7 @@ jobs:
 
           # -------- Write repo files --------
           def write_repo_files(story_key, story_summary, ac_items, gwt_texts):
-              base = pathlib.Path("tests/generated") / story_key
+			  base = pathlib.Path("tests/generated") / story_key
               base.mkdir(parents=True, exist_ok=True)
 
               # README
