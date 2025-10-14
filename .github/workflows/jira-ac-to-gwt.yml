@@ -180,7 +180,7 @@ jobs:
                   else:
                         description_adf = adf_from_plain(str(description_plain_or_adf))
 
-                payload = {
+                 payload = {
                       "fields": {
                                   "project": {"key": project_key},
                                   "summary": summary,
