@@ -297,7 +297,7 @@ jobs:
 
           # -------- Write repo files --------
           def write_repo_files(story_key, story_summary, ac_items, gwt_texts):
-			  base = pathlib.Path("tests/generated") / story_key
+              base = pathlib.Path("tests/generated") / story_key
               base.mkdir(parents=True, exist_ok=True)
 
               # README
