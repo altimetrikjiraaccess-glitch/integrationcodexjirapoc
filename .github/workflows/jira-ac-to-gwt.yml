@@ -376,7 +376,7 @@ jobs:
                           )
               test_key = create_test_issue(project_key, f"[Auto-Test] {STORY_KEY} - AC {i}",
                              adf_from_gherkin(title, g),   # send ADF directly
-                             issue_type_name=TEST_TYPE, issue_type_id=TEST_TYPE_ID)
+                             issue_type_name=TEST_TYPE, issue_type_id=None)
 
               link_issues(test_key, STORY_KEY)
               add_comment(test_key, title, g)  # ADF comment
