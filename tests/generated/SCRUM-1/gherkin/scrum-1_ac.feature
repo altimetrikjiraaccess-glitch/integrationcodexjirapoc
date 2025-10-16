@@ -1,12 +1,9 @@
 Feature: SCRUM-1 — Add Custom Field and Validation Rule on Account Object
 
-Scenario: Create Customer Type Field on Account Object  
-Given I am on the Account object setup  
-When I add a new field called Customer Type with values Prospect, Customer, Partner  
-Then the Customer Type field should be visible on the Account Page Layout  
-
-Scenario: Validate Customer Number Requirement  
-Given the Customer Type field is set to Customer  
-When I attempt to save the Account record without entering a Customer Number  
-Then I should see an error message "Customer Number is required when Customer Type is Customer"  
-And the record should not be saved
+Scenario: Create Customer Type Field on Account Object
+Given the Account object exists  
+When a new field called "Customer Type" (Picklist) is added with values "Prospect", "Customer", "Partner"  
+And the field is visible on the Account Page Layout  
+And a validation rule is created that requires "Customer Number" (Text) when "Customer Type" is "Customer"  
+Then the error message "Customer Number is required when Customer Type is Customer." should be displayed if "Customer Type" is "Customer" and "Customer Number" is empty  
+And the record should not be saved if the validation rule condition is not met.
