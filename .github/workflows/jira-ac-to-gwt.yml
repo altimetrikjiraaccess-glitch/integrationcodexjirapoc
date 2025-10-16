@@ -63,6 +63,7 @@ jobs:
           STORY_KEY: ${{ github.event.inputs.story_key }}
           AC_FIELD_ID: "customfield_10059"
           TEST_ISSUE_TYPE: "Test Case"     # Adjust if your Jira uses a different name ("Test Case", etc.)
+          TEST_ISSUE_TYPE_ID: ${{ secrets.TEST_ISSUE_TYPE_ID }}
           ISSUE_LINK_TYPE: "Relates"  # Adjust to your scheme if needed
 
           # --- Git author for commits ---
@@ -86,6 +87,7 @@ jobs:
           AC_FIELD_ID = os.environ.get("AC_FIELD_ID", "customfield_10059")
           TEST_TYPE   = os.environ.get("TEST_ISSUE_TYPE", "Test Case")
           LINK_TYPE   = os.environ.get("ISSUE_LINK_TYPE", "Relates")
+          TEST_TYPE_ID = os.environ["TEST_ISSUE_TYPE_ID"]
 
           OAI_KEY     = os.environ.get("OPENAI_API_KEY") or ""
           OAI_MODEL   = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
@@ -376,7 +378,7 @@ jobs:
                           )
               test_key = create_test_issue(project_key, f"[Auto-Test] {STORY_KEY} - AC {i}",
                              adf_from_gherkin(title, g),   # send ADF directly
-                             issue_type_name=TEST_TYPE, issue_type_id=None)
+                             issue_type_name=TEST_TYPE, issue_type_id=TEST_TYPE_ID)
 
               link_issues(test_key, STORY_KEY)
               add_comment(test_key, title, g)  # ADF comment
